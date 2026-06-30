@@ -7,7 +7,7 @@ import {
   TrendingDown, TrendingUp, Wallet, CreditCard, Banknote, QrCode, FileText,
   Landmark, History
 } from "lucide-react";
-import { doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
+import { doc, getDoc, setDoc, onSnapshot, runTransaction } from "firebase/firestore";
 import { db } from "./firebase.js";
 
 // Documento único no Firestore onde ficam guardados todos os dados compartilhados
@@ -115,6 +115,38 @@ function isCardMethod(methodId, paymentMethods) {
   if (!methodId) return true;
   const m = (paymentMethods || []).find((p) => p.id === methodId);
   return m ? !!m.isCard : true;
+}
+// Gera (se ainda não existirem) os gastos do mês atual referentes às despesas recorrentes ativas.
+// É uma função "pura": sempre opera sobre o "current" que recebe, nunca sobre uma cópia antiga
+// guardada em algum lugar — assim pode ser chamada tanto para uma checagem rápida local quanto
+// dentro de uma transação do Firestore, contra o dado mais recente possível.
+function generateRecurringExpenses(current) {
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth(), today = now.getDate();
+  const daysInMonthNow = new Date(y, m + 1, 0).getDate();
+  let changed = false;
+  const newExpenses = [...current.expenses];
+  (current.recurring || []).filter((r) => r.active).forEach((r) => {
+    const day = Math.min(Number(r.day) || 1, daysInMonthNow);
+    if (today >= day) {
+      const monthPrefix = `${y}-${String(m + 1).padStart(2, "0")}`;
+      const exists = newExpenses.some((e) => e.recurringId === r.id && e.date.startsWith(monthPrefix));
+      if (!exists) {
+        newExpenses.push({
+          id: genId("exp"),
+          value: Number(r.value) || 0,
+          description: r.description,
+          date: `${monthPrefix}-${String(day).padStart(2, "0")}`,
+          categoryId: r.categoryId,
+          person: r.person || "Automático",
+          paymentMethodId: r.paymentMethodId,
+          recurringId: r.id,
+        });
+        changed = true;
+      }
+    }
+  });
+  return { expenses: newExpenses, changed };
 }
 function daysInMonth(year, month) {
   return new Date(year, month + 1, 0).getDate();
@@ -290,14 +322,33 @@ export default function CartaoFamilia() {
     return () => unsubscribe();
   }, []);
 
-  const persist = useCallback(async (newData) => {
-    const withTs = { ...newData, updatedAt: Date.now() };
-    setData(withTs);
+  // Salva alterações de forma segura mesmo com dois celulares usando o app ao mesmo tempo.
+  // "updater" é uma função que recebe o dado MAIS RECENTE (lido na hora do Firestore, dentro
+  // de uma transação) e retorna a nova versão completa — isso garante que a gravação de uma
+  // pessoa nunca apague por acidente uma mudança recente feita pela outra.
+  const persist = useCallback(async (updater) => {
+    // Atualização otimista: a tela responde na hora, sem esperar a confirmação da nuvem
+    setData((current) => {
+      if (!current) return current;
+      const computed = typeof updater === "function" ? updater(current) : updater;
+      return { ...computed, updatedAt: Date.now() };
+    });
     try {
       setSaveError(false);
-      await setDoc(docRef, withTs);
-      // Só marca como sincronizado depois que a gravação realmente foi confirmada na nuvem
-      lastSyncedRef.current = withTs.updatedAt;
+      const result = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(docRef);
+        const latest = snap.exists() ? ensureShape(snap.data()) : defaultData();
+        const computed = typeof updater === "function" ? updater(latest) : updater;
+        const withTs = { ...computed, updatedAt: Date.now() };
+        tx.set(docRef, withTs);
+        return withTs;
+      });
+      // Reconcilia a tela com o que realmente ficou confirmado no Firestore
+      // (só aceita se for mais novo que o que já temos, pra nunca voltar no tempo)
+      if (result.updatedAt >= lastSyncedRef.current) {
+        lastSyncedRef.current = result.updatedAt;
+        setData(result);
+      }
     } catch (e) {
       console.error("Erro ao salvar no Firestore:", e);
       setSaveError(true);
@@ -307,34 +358,13 @@ export default function CartaoFamilia() {
   // Geração automática de gastos recorrentes para o mês atual real
   useEffect(() => {
     if (!data) return;
-    const now = new Date();
-    const y = now.getFullYear(), m = now.getMonth(), today = now.getDate();
-    const daysInMonth = new Date(y, m + 1, 0).getDate();
-    let changed = false;
-    const newExpenses = [...data.expenses];
-    (data.recurring || []).filter((r) => r.active).forEach((r) => {
-      const day = Math.min(Number(r.day) || 1, daysInMonth);
-      if (today >= day) {
-        const monthPrefix = `${y}-${String(m + 1).padStart(2, "0")}`;
-        const exists = newExpenses.some((e) => e.recurringId === r.id && e.date.startsWith(monthPrefix));
-        if (!exists) {
-          newExpenses.push({
-            id: genId("exp"),
-            value: Number(r.value) || 0,
-            description: r.description,
-            date: `${monthPrefix}-${String(day).padStart(2, "0")}`,
-            categoryId: r.categoryId,
-            person: r.person || "Automático",
-            paymentMethodId: r.paymentMethodId,
-            recurringId: r.id,
-          });
-          changed = true;
-        }
-      }
+    // Checagem rápida local: só vale a pena disparar uma gravação se realmente há algo novo a gerar
+    const { changed } = generateRecurringExpenses(data);
+    if (!changed) return;
+    persist((current) => {
+      const { expenses } = generateRecurringExpenses(current);
+      return { ...current, expenses };
     });
-    if (changed) {
-      persist({ ...data, expenses: newExpenses });
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data && data.recurring, data && data.expenses && data.expenses.length]);
 
@@ -499,54 +529,72 @@ export default function CartaoFamilia() {
   }
 
   // ---------- ações ----------
+  // Cada ação abaixo é escrita como uma função que recebe o dado MAIS RECENTE
+  // (lido na hora, direto do Firestore, dentro de uma transação) — assim, mesmo que
+  // você e sua esposa salvem algo quase ao mesmo tempo em celulares diferentes,
+  // uma gravação nunca apaga por acidente o que a outra pessoa acabou de salvar.
   function saveExpense(exp) {
-    const exists = data.expenses.some((e) => e.id === exp.id);
-    const expenses = exists ? data.expenses.map((e) => (e.id === exp.id ? exp : e)) : [...data.expenses, exp];
-    persist({ ...data, expenses });
+    persist((current) => {
+      const exists = current.expenses.some((e) => e.id === exp.id);
+      const expenses = exists ? current.expenses.map((e) => (e.id === exp.id ? exp : e)) : [...current.expenses, exp];
+      return { ...current, expenses };
+    });
     setExpenseModal(null);
   }
   function deleteExpense(id) {
-    persist({ ...data, expenses: data.expenses.filter((e) => e.id !== id) });
+    persist((current) => ({ ...current, expenses: current.expenses.filter((e) => e.id !== id) }));
   }
   function saveCategory(cat) {
-    const exists = data.categories.some((c) => c.id === cat.id);
-    const categories = exists ? data.categories.map((c) => (c.id === cat.id ? cat : c)) : [...data.categories, cat];
-    persist({ ...data, categories });
+    persist((current) => {
+      const exists = current.categories.some((c) => c.id === cat.id);
+      const categories = exists ? current.categories.map((c) => (c.id === cat.id ? cat : c)) : [...current.categories, cat];
+      return { ...current, categories };
+    });
     setCategoryModal(null);
   }
   function deleteCategory(id) {
     if (data.categories.length <= 1) return;
-    const fallback = data.categories.find((c) => c.id !== id).id;
-    const categories = data.categories.filter((c) => c.id !== id);
-    const expenses = data.expenses.map((e) => (e.categoryId === id ? { ...e, categoryId: fallback } : e));
-    const recurring = data.recurring.map((r) => (r.categoryId === id ? { ...r, categoryId: fallback } : r));
-    persist({ ...data, categories, expenses, recurring });
+    persist((current) => {
+      if (current.categories.length <= 1) return current;
+      const fallback = (current.categories.find((c) => c.id !== id) || current.categories[0]).id;
+      const categories = current.categories.filter((c) => c.id !== id);
+      const expenses = current.expenses.map((e) => (e.categoryId === id ? { ...e, categoryId: fallback } : e));
+      const recurring = current.recurring.map((r) => (r.categoryId === id ? { ...r, categoryId: fallback } : r));
+      return { ...current, categories, expenses, recurring };
+    });
   }
   function savePaymentMethod(pm) {
-    const exists = data.paymentMethods.some((p) => p.id === pm.id);
-    const paymentMethods = exists ? data.paymentMethods.map((p) => (p.id === pm.id ? pm : p)) : [...data.paymentMethods, pm];
-    persist({ ...data, paymentMethods });
+    persist((current) => {
+      const exists = current.paymentMethods.some((p) => p.id === pm.id);
+      const paymentMethods = exists ? current.paymentMethods.map((p) => (p.id === pm.id ? pm : p)) : [...current.paymentMethods, pm];
+      return { ...current, paymentMethods };
+    });
     setPaymentMethodModal(null);
   }
   function deletePaymentMethod(id) {
     if (data.paymentMethods.length <= 1) return;
-    const fallback = data.paymentMethods.find((p) => p.id !== id).id;
-    const paymentMethods = data.paymentMethods.filter((p) => p.id !== id);
-    const expenses = data.expenses.map((e) => (e.paymentMethodId === id ? { ...e, paymentMethodId: fallback } : e));
-    const recurring = data.recurring.map((r) => (r.paymentMethodId === id ? { ...r, paymentMethodId: fallback } : r));
-    persist({ ...data, paymentMethods, expenses, recurring });
+    persist((current) => {
+      if (current.paymentMethods.length <= 1) return current;
+      const fallback = (current.paymentMethods.find((p) => p.id !== id) || current.paymentMethods[0]).id;
+      const paymentMethods = current.paymentMethods.filter((p) => p.id !== id);
+      const expenses = current.expenses.map((e) => (e.paymentMethodId === id ? { ...e, paymentMethodId: fallback } : e));
+      const recurring = current.recurring.map((r) => (r.paymentMethodId === id ? { ...r, paymentMethodId: fallback } : r));
+      return { ...current, paymentMethods, expenses, recurring };
+    });
   }
   function saveRecurring(rec) {
-    const exists = data.recurring.some((r) => r.id === rec.id);
-    const recurring = exists ? data.recurring.map((r) => (r.id === rec.id ? rec : r)) : [...data.recurring, rec];
-    persist({ ...data, recurring });
+    persist((current) => {
+      const exists = current.recurring.some((r) => r.id === rec.id);
+      const recurring = exists ? current.recurring.map((r) => (r.id === rec.id ? rec : r)) : [...current.recurring, rec];
+      return { ...current, recurring };
+    });
     setRecurringModal(null);
   }
   function deleteRecurring(id) {
-    persist({ ...data, recurring: data.recurring.filter((r) => r.id !== id) });
+    persist((current) => ({ ...current, recurring: current.recurring.filter((r) => r.id !== id) }));
   }
   function saveSettings(settings) {
-    persist({ ...data, settings });
+    persist((current) => ({ ...current, settings }));
     setSettingsOpen(false);
   }
 
