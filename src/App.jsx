@@ -1011,16 +1011,81 @@ function JarSvg({ fillPct }) {
 
 // ---------------- Histórico ----------------
 function HistoricoTab({ history, paymentMethods }) {
+  // Intervalo disponível (com base nos ciclos que já existem)
+  const monthsAvailable = useMemo(() => {
+    return history.map((h) => `${h.start.getFullYear()}-${String(h.start.getMonth() + 1).padStart(2, "0")}`);
+  }, [history]);
+  const earliestMonth = monthsAvailable.length ? monthsAvailable[monthsAvailable.length - 1] : "";
+  const latestMonth = monthsAvailable.length ? monthsAvailable[0] : "";
+
+  const [filterStart, setFilterStart] = useState(earliestMonth);
+  const [filterEnd, setFilterEnd] = useState(latestMonth);
+
+  // Se o histórico carregar depois (primeira renderização), inicializa os campos quando ainda estiverem vazios
+  useEffect(() => {
+    if (!filterStart && earliestMonth) setFilterStart(earliestMonth);
+    if (!filterEnd && latestMonth) setFilterEnd(latestMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [earliestMonth, latestMonth]);
+
+  const filteredHistory = useMemo(() => {
+    if (!filterStart && !filterEnd) return history;
+    return history.filter((h) => {
+      const monthKey = `${h.start.getFullYear()}-${String(h.start.getMonth() + 1).padStart(2, "0")}`;
+      if (filterStart && monthKey < filterStart) return false;
+      if (filterEnd && monthKey > filterEnd) return false;
+      return true;
+    });
+  }, [history, filterStart, filterEnd]);
+
+  const periodTotal = useMemo(() => filteredHistory.reduce((s, h) => s + h.total, 0), [filteredHistory]);
+
   return (
     <div>
       <p style={{ fontSize: 13, color: "var(--ink-soft)", margin: "0 0 12px" }}>
-        Veja ciclo a ciclo quanto foi gasto no total, e quanto disso foi no cartão de crédito, Pix, dinheiro, etc.
+        Veja ciclo a ciclo quanto foi gasto no total, somando todas as formas de pagamento, e quanto disso foi no cartão de crédito.
       </p>
-      {history.length === 0 ? (
-        <EmptyState text="Ainda não há ciclos para mostrar aqui." />
+
+      <div className="fc-card" style={{ padding: 12, marginBottom: 12 }}>
+        <p style={{ fontSize: 11.5, fontWeight: 700, color: "var(--ink-soft)", textTransform: "uppercase", letterSpacing: 0.4, margin: "0 0 8px" }}>
+          Período de vigência
+        </p>
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}>
+            <label style={{ fontSize: 11, color: "var(--ink-soft)", display: "block", marginBottom: 3 }}>Início</label>
+            <input
+              className="fc-input"
+              type="month"
+              value={filterStart}
+              min={earliestMonth || undefined}
+              max={filterEnd || latestMonth || undefined}
+              onChange={(e) => setFilterStart(e.target.value)}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={{ fontSize: 11, color: "var(--ink-soft)", display: "block", marginBottom: 3 }}>Fim</label>
+            <input
+              className="fc-input"
+              type="month"
+              value={filterEnd}
+              min={filterStart || earliestMonth || undefined}
+              max={latestMonth || undefined}
+              onChange={(e) => setFilterEnd(e.target.value)}
+            />
+          </div>
+        </div>
+        {filteredHistory.length > 0 && (
+          <p style={{ fontSize: 12, color: "var(--ink-soft)", margin: "10px 0 0", paddingTop: 8, borderTop: "1px solid var(--line)" }}>
+            Total no período: <strong style={{ color: "var(--ink)" }}>{formatBRL(periodTotal)}</strong> ({filteredHistory.length} {filteredHistory.length === 1 ? "ciclo" : "ciclos"})
+          </p>
+        )}
+      </div>
+
+      {filteredHistory.length === 0 ? (
+        <EmptyState text="Nenhum ciclo encontrado nesse período. Ajuste as datas de início e fim acima." />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {history.map((h, i) => {
+          {filteredHistory.map((h, i) => {
             const paymentEntries = Object.entries(h.byPayment)
               .map(([id, value]) => {
                 const pm = paymentMethods.find((p) => p.id === id);
@@ -1053,7 +1118,7 @@ function HistoricoTab({ history, paymentMethods }) {
                   })}
                 </div>
                 <p style={{ fontSize: 11, color: "var(--ink-soft)", margin: "10px 0 0", paddingTop: 8, borderTop: "1px solid var(--line)" }}>
-                  No cartão: <strong style={{ color: "var(--ink)" }}>{formatBRL(h.cardTotal)}</strong> · Outras formas: <strong style={{ color: "var(--ink)" }}>{formatBRL(h.nonCardTotal)}</strong>
+                  No cartão (conta na meta): <strong style={{ color: "var(--ink)" }}>{formatBRL(h.cardTotal)}</strong> · Outras formas: <strong style={{ color: "var(--ink)" }}>{formatBRL(h.nonCardTotal)}</strong>
                 </p>
               </div>
             );
