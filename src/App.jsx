@@ -464,9 +464,12 @@ export default function CartaoFamilia() {
       });
       const total = exps.reduce((s, e) => s + Number(e.value), 0);
       const byPayment = {};
+      const byCategory = {};
       exps.forEach((e) => {
         const key = e.paymentMethodId || "_none";
         byPayment[key] = (byPayment[key] || 0) + Number(e.value);
+        const catKey = e.categoryId || "_none";
+        byCategory[catKey] = (byCategory[catKey] || 0) + Number(e.value);
       });
       const cardTotal = exps
         .filter((e) => isCardMethod(e.paymentMethodId, data.paymentMethods))
@@ -478,6 +481,7 @@ export default function CartaoFamilia() {
         cardTotal,
         nonCardTotal: total - cardTotal,
         byPayment,
+        byCategory,
         ongoing: cyc.end >= now,
       };
     });
@@ -657,7 +661,7 @@ export default function CartaoFamilia() {
           />
         )}
         {activeTab === "caixinha" && <CaixinhaTab caixinha={caixinha} monthlyLimit={monthlyLimit} />}
-        {activeTab === "historico" && <HistoricoTab history={monthlyHistory} paymentMethods={data.paymentMethods} />}
+        {activeTab === "historico" && <HistoricoTab history={monthlyHistory} paymentMethods={data.paymentMethods} categories={data.categories} />}
       </div>
 
       {/* Botão flutuante de adicionar gasto */}
@@ -1010,7 +1014,7 @@ function JarSvg({ fillPct }) {
 }
 
 // ---------------- Histórico ----------------
-function HistoricoTab({ history, paymentMethods }) {
+function HistoricoTab({ history, paymentMethods, categories }) {
   // Intervalo disponível (com base nos ciclos que já existem)
   const monthsAvailable = useMemo(() => {
     return history.map((h) => `${h.start.getFullYear()}-${String(h.start.getMonth() + 1).padStart(2, "0")}`);
@@ -1039,6 +1043,8 @@ function HistoricoTab({ history, paymentMethods }) {
   }, [history, filterStart, filterEnd]);
 
   const periodTotal = useMemo(() => filteredHistory.reduce((s, h) => s + h.total, 0), [filteredHistory]);
+
+  const [breakdownMode, setBreakdownMode] = useState("payment"); // "payment" | "category"
 
   return (
     <div>
@@ -1081,6 +1087,11 @@ function HistoricoTab({ history, paymentMethods }) {
         )}
       </div>
 
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <button type="button" onClick={() => setBreakdownMode("payment")} className={breakdownMode === "payment" ? "fc-chip fc-chip-active" : "fc-chip"}>Por forma de pagamento</button>
+        <button type="button" onClick={() => setBreakdownMode("category")} className={breakdownMode === "category" ? "fc-chip fc-chip-active" : "fc-chip"}>Por categoria</button>
+      </div>
+
       {filteredHistory.length === 0 ? (
         <EmptyState text="Nenhum ciclo encontrado nesse período. Ajuste as datas de início e fim acima." />
       ) : (
@@ -1092,6 +1103,13 @@ function HistoricoTab({ history, paymentMethods }) {
                 return { id, name: pm ? pm.name : "Não informado", color: pm ? pm.color : "gray", icon: pm ? pm.icon : "MoreHorizontal", value };
               })
               .sort((a, b) => b.value - a.value);
+            const categoryEntries = Object.entries(h.byCategory || {})
+              .map(([id, value]) => {
+                const cat = categories.find((c) => c.id === id);
+                return { id, name: cat ? cat.name : "Sem categoria", color: cat ? cat.color : "gray", icon: cat ? cat.icon : "MoreHorizontal", value };
+              })
+              .sort((a, b) => b.value - a.value);
+            const entries = breakdownMode === "category" ? categoryEntries : paymentEntries;
             return (
               <div key={i} className="fc-card" style={{ padding: 14 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -1102,7 +1120,7 @@ function HistoricoTab({ history, paymentMethods }) {
                   <p className="fc-display" style={{ fontSize: 17, fontWeight: 800, margin: 0 }}>{formatBRL(h.total)}</p>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 10 }}>
-                  {paymentEntries.map((p) => {
+                  {entries.map((p) => {
                     const colors = COLOR_CLASSES[p.color] || COLOR_CLASSES.gray;
                     const pct = h.total > 0 ? (p.value / h.total) * 100 : 0;
                     return (
