@@ -149,13 +149,12 @@ function generateRecurringExpenses(current) {
         const dim = new Date(y, m + 1, 0).getDate();
         const day = Math.min(targetDay, dim);
         const targetDate = new Date(y, m, day);
-        // A data de destino precisa estar dentro do ciclo (passada OU futura — mostramos
-        // recorrentes futuros também, para o usuário ver o planejamento completo do ciclo)
-        if (targetDate >= cycleStart && targetDate <= cycleEnd) {
+        // A data de destino precisa estar dentro do ciclo E já ter chegado (ou ser hoje)
+        if (targetDate >= cycleStart && targetDate <= cycleEnd && targetDate <= now) {
           const dateStr = `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
           // Verifica se já existe um gasto gerado para esse recorrente nesse ciclo
           const alreadyExists = newExpenses.some(
-            (e) => e.recurringId === r.id &&
+            (e) => e.recurringId === r.id && e.date >= dateStr.substring(0, 7) + "-01" &&
             parseDate(e.date) >= cycleStart && parseDate(e.date) <= cycleEnd
           );
           if (!alreadyExists) {
@@ -168,7 +167,6 @@ function generateRecurringExpenses(current) {
               person: r.person || "Automático",
               paymentMethodId: r.paymentMethodId,
               recurringId: r.id,
-              pending: targetDate > now, // marca como previsto se ainda não chegou
             });
             changed = true;
           }
@@ -392,21 +390,13 @@ export default function CartaoFamilia() {
     if (!data) return;
     // Checagem rápida local: só vale a pena disparar uma gravação se realmente há algo novo a gerar
     const { changed } = generateRecurringExpenses(data);
-    // Também verifica se algum gasto previsto (pending) já virou passado e precisa ser confirmado
-    const now = new Date(); now.setHours(0, 0, 0, 0);
-    const hasStalePending = data.expenses.some((e) => e.pending && parseDate(e.date) <= now);
-    if (!changed && !hasStalePending) return;
+    if (!changed) return;
     persist((current) => {
-      const { expenses: withNew } = generateRecurringExpenses(current);
-      // Remove o flag "pending" de gastos cujo dia já chegou
-      const now2 = new Date(); now2.setHours(0, 0, 0, 0);
-      const expenses = withNew.map((e) =>
-        e.pending && parseDate(e.date) <= now2 ? { ...e, pending: false } : e
-      );
+      const { expenses } = generateRecurringExpenses(current);
       return { ...current, expenses };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data && data.recurring, data && data.expenses && data.expenses.length, nowTick]);
+  }, [data && data.recurring, data && data.expenses && data.expenses.length]);
 
   const [nowTick, setNowTick] = useState(Date.now());
   useEffect(() => {
@@ -982,18 +972,14 @@ function ExpenseRow({ expense, categories, paymentMethods, onEdit, onDelete }) {
   const cat = categories.find((c) => c.id === expense.categoryId) || categories[0];
   const colors = COLOR_CLASSES[cat?.color] || COLOR_CLASSES.gray;
   const pm = (paymentMethods || []).find((p) => p.id === expense.paymentMethodId);
-  const isPending = expense.pending === true;
   return (
-    <div className="fc-card" style={{ padding: 10, display: "flex", alignItems: "center", gap: 10, opacity: isPending ? 0.7 : 1, borderStyle: isPending ? "dashed" : "solid" }}>
+    <div className="fc-card" style={{ padding: 10, display: "flex", alignItems: "center", gap: 10 }}>
       <div style={{ background: colors.bg, width: 36, height: 36, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
         <Icon name={cat?.icon} size={17} color={colors.text} />
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <p style={{ fontSize: 13, fontWeight: 600, margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{expense.description || cat?.name}</p>
-        <p style={{ fontSize: 11, color: "var(--ink-soft)", margin: 0 }}>
-          {formatDateBR(expense.date)} · {expense.person}{pm ? ` · ${pm.name}` : ""}
-          {isPending && <span style={{ color: "var(--gold-dark)", fontWeight: 600 }}> · previsto</span>}
-        </p>
+        <p style={{ fontSize: 11, color: "var(--ink-soft)", margin: 0 }}>{formatDateBR(expense.date)} · {expense.person}{pm ? ` · ${pm.name}` : ""}</p>
       </div>
       <p style={{ fontSize: 13.5, fontWeight: 700, margin: 0, whiteSpace: "nowrap" }}>{formatBRL(expense.value)}</p>
       <button onClick={onEdit} className="fc-icon-btn" style={{ marginLeft: 2 }}><Pencil size={15} color="var(--ink-soft)" /></button>
