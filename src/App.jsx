@@ -800,9 +800,12 @@ function InicioTab({ data, monthTotalSpent, monthTotalAll, monthlyLimit, percent
     if (selectedWeek === null) return monthExpenses;
     const w = weeksWithStatus.find((x) => x.index === selectedWeek);
     if (!w) return monthExpenses;
+    // Usa as mesmas datas absolutas (w.start / w.end) que o cálculo de "spent" em weeksWithStatus
+    // usa — assim o filtro é 100% consistente com o que aparece nos totais de cada semana.
+    const weekEnd = new Date(w.end.getFullYear(), w.end.getMonth(), w.end.getDate(), 23, 59, 59);
     return monthExpenses.filter((e) => {
-      const day = parseDate(e.date).getDate();
-      return day >= w.startDay && day <= w.endDay;
+      const d = parseDate(e.date);
+      return d >= w.start && d <= weekEnd;
     });
   }, [selectedWeek, monthExpenses, weeksWithStatus]);
 
@@ -866,7 +869,9 @@ function InicioTab({ data, monthTotalSpent, monthTotalAll, monthlyLimit, percent
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "18px 2px 8px" }}>
         <p style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink-soft)", textTransform: "uppercase", letterSpacing: 0.4, margin: 0 }}>
-          {selectedWeekObj ? `Semana ${selectedWeekObj.index} — dias ${selectedWeekObj.startDay} a ${selectedWeekObj.endDay}` : "Últimos lançamentos"}
+          {selectedWeekObj
+            ? `Semana ${selectedWeekObj.index} — ${formatWeekRange(selectedWeekObj.start, selectedWeekObj.end)}`
+            : "Últimos lançamentos"}
         </p>
         {selectedWeek !== null && (
           <button type="button" onClick={() => setSelectedWeek(null)} style={{ background: "none", border: "none", fontSize: 11.5, color: "var(--jade)", cursor: "pointer", fontWeight: 600 }}>
