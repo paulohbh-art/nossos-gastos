@@ -621,9 +621,32 @@ export default function CartaoFamilia() {
   }
   function saveRecurring(rec) {
     persist((current) => {
-      const exists = current.recurring.some((r) => r.id === rec.id);
-      const recurring = exists ? current.recurring.map((r) => (r.id === rec.id ? rec : r)) : [...current.recurring, rec];
-      return { ...current, recurring };
+      const isEdit = current.recurring.some((r) => r.id === rec.id);
+      // Atualiza o template da despesa recorrente
+      const recurring = isEdit
+        ? current.recurring.map((r) => (r.id === rec.id ? rec : r))
+        : [...current.recurring, rec];
+
+      // Se é uma edição, remove os gastos gerados automaticamente para este recorrente
+      // no ciclo atual (identificados pelo recurringId), para que sejam regenerados
+      // com os novos valores (novo dia, valor, categoria, etc.)
+      let expenses = current.expenses;
+      if (isEdit) {
+        const csd = Math.min(31, Math.max(1, Number(current.settings?.cycleStartDay) || 1));
+        const ced = Math.min(31, Math.max(1, Number(current.settings?.cycleEndDay) || 31));
+        const { start: cycleStart, end: cycleEnd } = getCycleForOffset(csd, ced, 0);
+        // Remove apenas os gerados automaticamente (recurringId presente) dentro do ciclo atual
+        expenses = expenses.filter((e) => {
+          if (e.recurringId !== rec.id) return true; // não é desse recorrente, mantém
+          const d = parseDate(e.date);
+          return !(d >= cycleStart && d <= cycleEnd); // remove se estiver no ciclo atual
+        });
+      }
+
+      // Regenera com os novos valores (o generateRecurringExpenses usa o template atualizado)
+      const nextData = { ...current, recurring, expenses };
+      const { expenses: refreshed } = generateRecurringExpenses(nextData);
+      return { ...nextData, expenses: refreshed };
     });
     setRecurringModal(null);
   }
