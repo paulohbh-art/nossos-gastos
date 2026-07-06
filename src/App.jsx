@@ -705,7 +705,12 @@ export default function CartaoFamilia() {
             onDelete={(r) =>
               setConfirmState({ message: `Excluir a despesa recorrente "${r.description}"?`, onConfirm: () => deleteRecurring(r.id) })
             }
-            onToggleActive={(r) => saveRecurring({ ...r, active: !r.active })}
+            onToggleActive={(r) => {
+              persist((current) => {
+                const recurring = current.recurring.map((x) => x.id === r.id ? { ...x, active: !x.active } : x);
+                return { ...current, recurring };
+              });
+            }}
           />
         )}
         {activeTab === "caixinha" && <CaixinhaTab caixinha={caixinha} monthlyLimit={monthlyLimit} />}
@@ -783,11 +788,25 @@ export default function CartaoFamilia() {
 
 // ---------------- Início ----------------
 function InicioTab({ data, monthTotalSpent, monthTotalAll, monthlyLimit, percentSpent, barColor, weeksWithStatus, monthExpenses, categorySpend, onEditExpense, onDeleteExpense }) {
+  const [selectedWeek, setSelectedWeek] = useState(null); // índice da semana selecionada, ou null = todos
+
   const categoryRanking = Object.entries(categorySpend)
     .map(([id, value]) => ({ id, value, cat: data.categories.find((c) => c.id === id) }))
     .filter((c) => c.cat && c.value > 0)
     .sort((a, b) => b.value - a.value);
   const maxCategorySpend = categoryRanking.length ? categoryRanking[0].value : 0;
+
+  const visibleExpenses = useMemo(() => {
+    if (selectedWeek === null) return monthExpenses;
+    const w = weeksWithStatus.find((x) => x.index === selectedWeek);
+    if (!w) return monthExpenses;
+    return monthExpenses.filter((e) => {
+      const day = parseDate(e.date).getDate();
+      return day >= w.startDay && day <= w.endDay;
+    });
+  }, [selectedWeek, monthExpenses, weeksWithStatus]);
+
+  const selectedWeekObj = selectedWeek !== null ? weeksWithStatus.find((x) => x.index === selectedWeek) : null;
 
   return (
     <div>
@@ -809,10 +828,15 @@ function InicioTab({ data, monthTotalSpent, monthTotalAll, monthlyLimit, percent
         )}
       </div>
 
-      <p style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink-soft)", textTransform: "uppercase", letterSpacing: 0.4, margin: "16px 2px 8px" }}>Metas semanais</p>
+      <p style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink-soft)", textTransform: "uppercase", letterSpacing: 0.4, margin: "16px 2px 8px" }}>Metas semanais <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0, color: "var(--ink-soft)", fontSize: 11 }}>— toque para ver os gastos da semana</span></p>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {weeksWithStatus.map((w) => (
-          <WeekRow key={w.index} w={w} />
+          <WeekRow
+            key={w.index}
+            w={w}
+            selected={selectedWeek === w.index}
+            onSelect={() => setSelectedWeek(selectedWeek === w.index ? null : w.index)}
+          />
         ))}
       </div>
 
@@ -840,12 +864,21 @@ function InicioTab({ data, monthTotalSpent, monthTotalAll, monthlyLimit, percent
         </div>
       )}
 
-      <p style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink-soft)", textTransform: "uppercase", letterSpacing: 0.4, margin: "18px 2px 8px" }}>Últimos lançamentos</p>
-      {monthExpenses.length === 0 ? (
-        <EmptyState text="Nenhum gasto lançado neste mês ainda. Toque no botão + para começar." />
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "18px 2px 8px" }}>
+        <p style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink-soft)", textTransform: "uppercase", letterSpacing: 0.4, margin: 0 }}>
+          {selectedWeekObj ? `Semana ${selectedWeekObj.index} — dias ${selectedWeekObj.startDay} a ${selectedWeekObj.endDay}` : "Últimos lançamentos"}
+        </p>
+        {selectedWeek !== null && (
+          <button type="button" onClick={() => setSelectedWeek(null)} style={{ background: "none", border: "none", fontSize: 11.5, color: "var(--jade)", cursor: "pointer", fontWeight: 600 }}>
+            Ver todos
+          </button>
+        )}
+      </div>
+      {visibleExpenses.length === 0 ? (
+        <EmptyState text={selectedWeek !== null ? "Nenhum gasto lançado nesta semana." : "Nenhum gasto lançado neste mês ainda. Toque no botão + para começar."} />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {monthExpenses.slice(0, 12).map((e) => (
+          {(selectedWeek !== null ? visibleExpenses : visibleExpenses.slice(0, 12)).map((e) => (
             <ExpenseRow key={e.id} expense={e} categories={data.categories} paymentMethods={data.paymentMethods} onEdit={() => onEditExpense(e)} onDelete={() => onDeleteExpense(e)} />
           ))}
         </div>
@@ -854,7 +887,7 @@ function InicioTab({ data, monthTotalSpent, monthTotalAll, monthlyLimit, percent
   );
 }
 
-function WeekRow({ w }) {
+function WeekRow({ w, selected, onSelect }) {
   const pct = w.goal > 0 ? Math.min(100, (w.spent / w.goal) * 100) : 0;
   const over = w.spent > w.goal;
   const cfg = {
@@ -864,10 +897,23 @@ function WeekRow({ w }) {
     concluida: { label: over ? "Excedeu a meta" : "Economizou nesta semana", color: over ? "var(--clay)" : "var(--jade)", Icon: over ? TrendingUp : Check },
   }[w.status];
   return (
-    <div className="fc-card" style={{ padding: 12 }}>
+    <div
+      className="fc-card"
+      onClick={onSelect}
+      style={{
+        padding: 12, cursor: "pointer",
+        border: selected ? "2px solid var(--jade)" : "1px solid var(--line)",
+        background: selected ? "var(--jade-light)" : "var(--paper-card)",
+        transition: "border 0.15s, background 0.15s",
+      }}
+    >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <p style={{ fontSize: 13, fontWeight: 700, margin: 0 }}>Semana {w.index} <span style={{ color: "var(--ink-soft)", fontWeight: 400, fontSize: 11.5 }}>({formatWeekRange(w.start, w.end)})</span></p>
+          <p style={{ fontSize: 13, fontWeight: 700, margin: 0 }}>
+            Semana {w.index}
+            <span style={{ color: "var(--ink-soft)", fontWeight: 400, fontSize: 11.5 }}> ({formatWeekRange(w.start, w.end)})</span>
+            {selected && <span style={{ color: "var(--jade)", fontSize: 10.5, fontWeight: 700, marginLeft: 6 }}>● selecionada</span>}
+          </p>
           <p style={{ fontSize: 11.5, color: cfg.color, margin: "2px 0 0", display: "flex", alignItems: "center", gap: 4 }}>
             <cfg.Icon size={12} /> {cfg.label}
           </p>
@@ -972,13 +1018,19 @@ function CategoriasTab({ categories, categorySpend, onAdd, onEdit, onDelete, pay
 
 // ---------------- Recorrentes ----------------
 function RecorrentesTab({ recurring, categories, onAdd, onEdit, onDelete, onToggleActive }) {
+  function durationLabel(r) {
+    if (!r.durationType || r.durationType === "continuous") return "Contínuo";
+    const n = r.durationValue || 1;
+    if (r.durationType === "weeks") return `${n} ${n === 1 ? "semana" : "semanas"}`;
+    return `${n} ${n === 1 ? "mês" : "meses"}`;
+  }
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <p style={{ fontSize: 13, color: "var(--ink-soft)", margin: 0 }}>Assinaturas, escola, internet, plano de saúde…</p>
         <button onClick={onAdd} className="fc-btn-primary" style={{ padding: "7px 12px", fontSize: 12.5 }}><Plus size={14} /> Nova</button>
       </div>
-      {recurring.length === 0 ? (
+      {!recurring || recurring.length === 0 ? (
         <EmptyState text="Nenhuma despesa recorrente cadastrada. Cadastre contas fixas para que sejam lançadas automaticamente todo mês." />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -988,11 +1040,13 @@ function RecorrentesTab({ recurring, categories, onAdd, onEdit, onDelete, onTogg
             return (
               <div key={r.id} className="fc-card" style={{ padding: 10, display: "flex", alignItems: "center", gap: 10, opacity: r.active ? 1 : 0.5 }}>
                 <div style={{ background: colors.bg, width: 38, height: 38, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <Icon name={cat?.icon} size={18} color={colors.text} />
+                  <Icon name={cat?.icon || "MoreHorizontal"} size={18} color={colors.text} />
                 </div>
                 <div style={{ flex: 1 }}>
                   <p style={{ fontSize: 13.5, fontWeight: 600, margin: 0 }}>{r.description}</p>
-                  <p style={{ fontSize: 11.5, color: "var(--ink-soft)", margin: 0 }}>{formatBRL(r.value)} · todo dia {r.day} {r.person ? `· ${r.person}` : ""}</p>
+                  <p style={{ fontSize: 11.5, color: "var(--ink-soft)", margin: 0 }}>
+                    {formatBRL(r.value)} · dia {r.day} · {durationLabel(r)}{r.person ? ` · ${r.person}` : ""}
+                  </p>
                 </div>
                 <button onClick={() => onToggleActive(r)} className="fc-icon-btn" title={r.active ? "Pausar" : "Ativar"}>
                   {r.active ? <Check size={15} color="var(--jade)" /> : <Clock size={15} color="var(--ink-soft)" />}
@@ -1072,6 +1126,7 @@ function HistoricoTab({ history, paymentMethods, categories }) {
 
   const [filterStart, setFilterStart] = useState(earliestMonth);
   const [filterEnd, setFilterEnd] = useState(latestMonth);
+  const [expandedCycle, setExpandedCycle] = useState(null); // chave "Y-M" do ciclo expandido
 
   // Se o histórico carregar depois (primeira renderização), inicializa os campos quando ainda estiverem vazios
   useEffect(() => {
@@ -1145,6 +1200,8 @@ function HistoricoTab({ history, paymentMethods, categories }) {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {filteredHistory.map((h, i) => {
+            const cycleKey = `${h.start.getFullYear()}-${h.start.getMonth()}`;
+            const isExpanded = expandedCycle === cycleKey;
             const paymentEntries = Object.entries(h.byPayment)
               .map(([id, value]) => {
                 const pm = paymentMethods.find((p) => p.id === id);
@@ -1159,33 +1216,54 @@ function HistoricoTab({ history, paymentMethods, categories }) {
               .sort((a, b) => b.value - a.value);
             const entries = breakdownMode === "category" ? categoryEntries : paymentEntries;
             return (
-              <div key={i} className="fc-card" style={{ padding: 14 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div key={i} className="fc-card" style={{ padding: 0, overflow: "hidden" }}>
+                {/* Cabeçalho clicável */}
+                <div
+                  onClick={() => setExpandedCycle(isExpanded ? null : cycleKey)}
+                  style={{ padding: 14, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                >
                   <div>
                     <p style={{ fontSize: 13.5, fontWeight: 700, margin: 0 }}>{formatCycleLabel(h.start, h.end)}</p>
                     {h.ongoing && <p style={{ fontSize: 10.5, color: "var(--gold-dark)", margin: "2px 0 0", fontWeight: 700 }}>EM ANDAMENTO</p>}
                   </div>
-                  <p className="fc-display" style={{ fontSize: 17, fontWeight: 800, margin: 0 }}>{formatBRL(h.total)}</p>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <p className="fc-display" style={{ fontSize: 17, fontWeight: 800, margin: 0 }}>{formatBRL(h.total)}</p>
+                    <ChevronRight size={16} color="var(--ink-soft)" style={{ transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 0.2s" }} />
+                  </div>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 10 }}>
-                  {entries.map((p) => {
-                    const colors = COLOR_CLASSES[p.color] || COLOR_CLASSES.gray;
-                    const pct = h.total > 0 ? (p.value / h.total) * 100 : 0;
-                    return (
-                      <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <div style={{ width: 22, height: 22, borderRadius: 6, background: colors.bg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                          <Icon name={p.icon} size={12} color={colors.text} />
-                        </div>
-                        <p style={{ fontSize: 12, margin: 0, flex: 1, color: "var(--ink-soft)" }}>{p.name}</p>
-                        <p style={{ fontSize: 12.5, margin: 0, fontWeight: 600 }}>{formatBRL(p.value)}</p>
-                        <p style={{ fontSize: 11, margin: 0, color: "var(--ink-soft)", width: 38, textAlign: "right" }}>{pct.toFixed(0)}%</p>
-                      </div>
-                    );
-                  })}
-                </div>
-                <p style={{ fontSize: 11, color: "var(--ink-soft)", margin: "10px 0 0", paddingTop: 8, borderTop: "1px solid var(--line)" }}>
-                  No cartão (conta na meta): <strong style={{ color: "var(--ink)" }}>{formatBRL(h.cardTotal)}</strong> · Outras formas: <strong style={{ color: "var(--ink)" }}>{formatBRL(h.nonCardTotal)}</strong>
-                </p>
+                {/* Detalhes expandidos */}
+                {isExpanded && (
+                  <div style={{ padding: "0 14px 14px", borderTop: "1px solid var(--line)" }}>
+                    <div style={{ display: "flex", gap: 8, margin: "10px 0 10px" }}>
+                      <button type="button" onClick={(e) => { e.stopPropagation(); setBreakdownMode("payment"); }} className={breakdownMode === "payment" ? "fc-chip fc-chip-active" : "fc-chip"} style={{ fontSize: 11.5, padding: "5px 10px" }}>Por pagamento</button>
+                      <button type="button" onClick={(e) => { e.stopPropagation(); setBreakdownMode("category"); }} className={breakdownMode === "category" ? "fc-chip fc-chip-active" : "fc-chip"} style={{ fontSize: 11.5, padding: "5px 10px" }}>Por categoria</button>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                      {entries.map((p) => {
+                        const colors = COLOR_CLASSES[p.color] || COLOR_CLASSES.gray;
+                        const pct = h.total > 0 ? (p.value / h.total) * 100 : 0;
+                        return (
+                          <div key={p.id}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                              <div style={{ width: 22, height: 22, borderRadius: 6, background: colors.bg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                                <Icon name={p.icon} size={12} color={colors.text} />
+                              </div>
+                              <p style={{ fontSize: 12, margin: 0, flex: 1, color: "var(--ink-soft)" }}>{p.name}</p>
+                              <p style={{ fontSize: 12.5, margin: 0, fontWeight: 600 }}>{formatBRL(p.value)}</p>
+                              <p style={{ fontSize: 11, margin: 0, color: "var(--ink-soft)", width: 34, textAlign: "right" }}>{pct.toFixed(0)}%</p>
+                            </div>
+                            <div style={{ height: 4, borderRadius: 3, background: "var(--line)", overflow: "hidden" }}>
+                              <div style={{ height: "100%", width: `${pct}%`, background: colors.dot }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p style={{ fontSize: 11, color: "var(--ink-soft)", margin: "10px 0 0", paddingTop: 8, borderTop: "1px solid var(--line)" }}>
+                      No cartão (conta na meta): <strong style={{ color: "var(--ink)" }}>{formatBRL(h.cardTotal)}</strong> · Outras formas: <strong style={{ color: "var(--ink)" }}>{formatBRL(h.nonCardTotal)}</strong>
+                    </p>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -1410,21 +1488,37 @@ function RecurringModal({ initial, categories, paymentMethods, settings, onSave,
   const [day, setDay] = useState(initial.day ?? 1);
   const [person, setPerson] = useState(initial.person ?? "");
   const [active, setActive] = useState(initial.active ?? true);
+  const [durationType, setDurationType] = useState(initial.durationType ?? "continuous"); // "continuous" | "months" | "weeks"
+  const [durationValue, setDurationValue] = useState(initial.durationValue ?? 1);
 
-  function handleSubmit(e) {
-    e.preventDefault();
+  function handleSubmit() {
     if (!description.trim() || !value) return;
-    onSave({ id: initial.id || genId("rec"), description: description.trim(), value: Number(value), categoryId, paymentMethodId, day: Number(day), person, active });
+    onSave({
+      id: initial.id || genId("rec"),
+      description: description.trim(),
+      value: Number(value),
+      categoryId,
+      paymentMethodId,
+      day: Number(day),
+      person,
+      active,
+      durationType,
+      durationValue: durationType !== "continuous" ? Number(durationValue) : null,
+    });
   }
+
+  const durationLabel = durationType === "continuous" ? "Contínuo (sem prazo de encerramento)" :
+    durationType === "weeks" ? `${durationValue} ${Number(durationValue) === 1 ? "semana" : "semanas"}` :
+    `${durationValue} ${Number(durationValue) === 1 ? "mês" : "meses"}`;
 
   return (
     <ModalShell title={isEdit ? "Editar recorrente" : "Nova despesa recorrente"} onClose={onClose}>
       <div>
         <Field label="Descrição">
-          <input className="fc-input" type="text" placeholder="Ex: Internet, escola, plano de saúde" value={description} onChange={(e) => setDescription(e.target.value)} autoFocus required />
+          <input className="fc-input" type="text" placeholder="Ex: Internet, escola, plano de saúde" value={description} onChange={(e) => setDescription(e.target.value)} autoFocus />
         </Field>
         <Field label="Valor (R$)">
-          <input className="fc-input" type="number" step="0.01" min="0" value={value} onChange={(e) => setValue(e.target.value)} required />
+          <input className="fc-input" type="number" step="0.01" min="0" value={value} onChange={(e) => setValue(e.target.value)} />
         </Field>
         <Field label="Categoria">
           <select className="fc-input" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
@@ -1441,7 +1535,21 @@ function RecurringModal({ initial, categories, paymentMethods, settings, onSave,
           </div>
         </Field>
         <Field label="Dia da cobrança no mês">
-          <input className="fc-input" type="number" min="1" max="31" value={day} onChange={(e) => setDay(e.target.value)} required />
+          <input className="fc-input" type="number" min="1" max="31" value={day} onChange={(e) => setDay(e.target.value)} />
+        </Field>
+        <Field label="Prazo de vigência">
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+            {[["continuous","Contínuo"],["months","Por meses"],["weeks","Por semanas"]].map(([t, l]) => (
+              <button type="button" key={t} onClick={() => setDurationType(t)} className={durationType === t ? "fc-chip fc-chip-active" : "fc-chip"}>{l}</button>
+            ))}
+          </div>
+          {durationType !== "continuous" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input className="fc-input" type="number" min="1" max="120" value={durationValue} onChange={(e) => setDurationValue(e.target.value)} style={{ width: 70 }} />
+              <span style={{ fontSize: 12.5, color: "var(--ink-soft)" }}>{durationType === "weeks" ? "semanas" : "meses"} a partir de hoje</span>
+            </div>
+          )}
+          <p style={{ fontSize: 11, color: "var(--ink-soft)", margin: "6px 0 0" }}>{durationLabel} — o app vai parar de lançar este gasto automaticamente quando o prazo acabar.</p>
         </Field>
         <Field label="Responsável (opcional)">
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
