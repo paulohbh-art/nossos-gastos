@@ -1492,44 +1492,53 @@ function RecurringModal({ initial, categories, paymentMethods, settings, onSave,
   const [paymentMethodId, setPaymentMethodId] = useState(initial.paymentMethodId ?? paymentMethods[0]?.id);
   const [day, setDay] = useState(initial.day ?? 1);
   const [person, setPerson] = useState(initial.person ?? "");
-  const [active, setActive] = useState(initial.active ?? true);
-  const [durationType, setDurationType] = useState(initial.durationType ?? "continuous"); // "continuous" | "months" | "weeks"
+  const [active, setActive] = useState(initial.active !== false); // padrão ativo
+  const [durationType, setDurationType] = useState(initial.durationType ?? "continuous");
   const [durationValue, setDurationValue] = useState(initial.durationValue ?? 1);
+  const [error, setError] = useState("");
 
   function handleSubmit() {
-    if (!description.trim() || !value) return;
+    const desc = String(description).trim();
+    const val = parseFloat(String(value).replace(",", "."));
+
+    if (!desc) { setError("Informe uma descrição para a despesa."); return; }
+    if (!val || val <= 0) { setError("Informe um valor maior que zero."); return; }
+
+    setError("");
     onSave({
       id: initial.id || genId("rec"),
-      description: description.trim(),
-      value: Number(value),
-      categoryId,
-      paymentMethodId,
-      day: Number(day),
-      person,
+      description: desc,
+      value: val,
+      categoryId: categoryId || categories[0]?.id,
+      paymentMethodId: paymentMethodId || paymentMethods[0]?.id,
+      day: Math.min(31, Math.max(1, Number(day) || 1)),
+      person: person || "",
       active,
-      durationType,
-      durationValue: durationType !== "continuous" ? Number(durationValue) : null,
+      durationType: durationType || "continuous",
+      durationValue: durationType !== "continuous" ? (Number(durationValue) || 1) : null,
     });
   }
 
-  const durationLabel = durationType === "continuous" ? "Contínuo (sem prazo de encerramento)" :
-    durationType === "weeks" ? `${durationValue} ${Number(durationValue) === 1 ? "semana" : "semanas"}` :
-    `${durationValue} ${Number(durationValue) === 1 ? "mês" : "meses"}`;
+  const durationLabel =
+    durationType === "continuous" ? "Sem prazo — lança todo mês enquanto estiver ativa" :
+    durationType === "months" ? `Por ${durationValue} ${Number(durationValue) === 1 ? "mês" : "meses"} a partir de hoje` :
+    `Por ${durationValue} ${Number(durationValue) === 1 ? "semana" : "semanas"} a partir de hoje`;
 
   return (
     <ModalShell title={isEdit ? "Editar recorrente" : "Nova despesa recorrente"} onClose={onClose}>
       <div>
-        <Field label="Descrição">
-          <input className="fc-input" type="text" placeholder="Ex: Internet, escola, plano de saúde" value={description} onChange={(e) => setDescription(e.target.value)} autoFocus />
+        {error && (
+          <p style={{ fontSize: 12.5, color: "var(--clay)", background: "var(--clay-light)", padding: "8px 12px", borderRadius: 8, margin: "0 0 12px" }}>{error}</p>
+        )}
+        <Field label="Descrição *">
+          <input className="fc-input" type="text" placeholder="Ex: Netflix, escola, internet…" value={description} onChange={(e) => { setDescription(e.target.value); setError(""); }} autoFocus />
         </Field>
-        <Field label="Valor (R$)">
-          <input className="fc-input" type="number" step="0.01" min="0" value={value} onChange={(e) => setValue(e.target.value)} />
+        <Field label="Valor (R$) *">
+          <input className="fc-input" type="number" step="0.01" min="0.01" inputMode="decimal" placeholder="0,00" value={value} onChange={(e) => { setValue(e.target.value); setError(""); }} />
         </Field>
         <Field label="Categoria">
           <select className="fc-input" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
+            {categories.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
           </select>
         </Field>
         <Field label="Forma de pagamento">
@@ -1544,17 +1553,17 @@ function RecurringModal({ initial, categories, paymentMethods, settings, onSave,
         </Field>
         <Field label="Prazo de vigência">
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-            {[["continuous","Contínuo"],["months","Por meses"],["weeks","Por semanas"]].map(([t, l]) => (
+            {[["continuous","Indeterminado"],["months","Por meses"],["weeks","Por semanas"]].map(([t, l]) => (
               <button type="button" key={t} onClick={() => setDurationType(t)} className={durationType === t ? "fc-chip fc-chip-active" : "fc-chip"}>{l}</button>
             ))}
           </div>
           {durationType !== "continuous" && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <input className="fc-input" type="number" min="1" max="120" value={durationValue} onChange={(e) => setDurationValue(e.target.value)} style={{ width: 70 }} />
-              <span style={{ fontSize: 12.5, color: "var(--ink-soft)" }}>{durationType === "weeks" ? "semanas" : "meses"} a partir de hoje</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <input className="fc-input" type="number" min="1" max="120" value={durationValue} onChange={(e) => setDurationValue(e.target.value)} style={{ width: 80 }} />
+              <span style={{ fontSize: 12.5, color: "var(--ink-soft)" }}>{durationType === "weeks" ? "semanas" : "meses"}</span>
             </div>
           )}
-          <p style={{ fontSize: 11, color: "var(--ink-soft)", margin: "6px 0 0" }}>{durationLabel} — o app vai parar de lançar este gasto automaticamente quando o prazo acabar.</p>
+          <p style={{ fontSize: 11.5, color: "var(--jade)", margin: 0, fontWeight: 500 }}>{durationLabel}</p>
         </Field>
         <Field label="Responsável (opcional)">
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -1564,9 +1573,9 @@ function RecurringModal({ initial, categories, paymentMethods, settings, onSave,
           </div>
         </Field>
         <Field label="Status">
-          <button type="button" onClick={() => setActive(!active)} className={active ? "fc-chip fc-chip-active" : "fc-chip"}>{active ? "Ativa — lança todo mês" : "Pausada"}</button>
+          <button type="button" onClick={() => setActive(!active)} className={active ? "fc-chip fc-chip-active" : "fc-chip"}>{active ? "✓ Ativa — será lançada automaticamente" : "Pausada"}</button>
         </Field>
-        <button type="button" onClick={handleSubmit} className="fc-btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 6 }}>Salvar</button>
+        <button type="button" onClick={handleSubmit} className="fc-btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 8, padding: "12px 0", fontSize: 14 }}>Salvar despesa recorrente</button>
       </div>
     </ModalShell>
   );
