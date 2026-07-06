@@ -116,36 +116,66 @@ function isCardMethod(methodId, paymentMethods) {
   const m = (paymentMethods || []).find((p) => p.id === methodId);
   return m ? !!m.isCard : true;
 }
-// Gera (se ainda não existirem) os gastos do mês atual referentes às despesas recorrentes ativas.
-// É uma função "pura": sempre opera sobre o "current" que recebe, nunca sobre uma cópia antiga
-// guardada em algum lugar — assim pode ser chamada tanto para uma checagem rápida local quanto
-// dentro de uma transação do Firestore, contra o dado mais recente possível.
+// Gera (se ainda não existirem) os gastos do CICLO ATUAL referentes às despesas recorrentes ativas.
+// Usa o ciclo de fatura configurado (cycleStartDay/cycleEndDay), não o mês calendário —
+// assim um gasto recorrente no dia 3, num ciclo 4 jul–4 ago, cai em 3 ago (dentro do ciclo).
 function generateRecurringExpenses(current) {
   const now = new Date();
-  const y = now.getFullYear(), m = now.getMonth(), today = now.getDate();
-  const daysInMonthNow = new Date(y, m + 1, 0).getDate();
+  now.setHours(0, 0, 0, 0);
+
+  const csd = Math.min(31, Math.max(1, Number(current.settings?.cycleStartDay) || 1));
+  const ced = Math.min(31, Math.max(1, Number(current.settings?.cycleEndDay) || 31));
+
+  // Calcula o ciclo atual a partir das configurações
+  const { start: cycleStart, end: cycleEnd } = getCycleForOffset(csd, ced, 0);
+
   let changed = false;
   const newExpenses = [...current.expenses];
+
   (current.recurring || []).filter((r) => r.active).forEach((r) => {
-    const day = Math.min(Number(r.day) || 1, daysInMonthNow);
-    if (today >= day) {
-      const monthPrefix = `${y}-${String(m + 1).padStart(2, "0")}`;
-      const exists = newExpenses.some((e) => e.recurringId === r.id && e.date.startsWith(monthPrefix));
-      if (!exists) {
-        newExpenses.push({
-          id: genId("exp"),
-          value: Number(r.value) || 0,
-          description: r.description,
-          date: `${monthPrefix}-${String(day).padStart(2, "0")}`,
-          categoryId: r.categoryId,
-          person: r.person || "Automático",
-          paymentMethodId: r.paymentMethodId,
-          recurringId: r.id,
-        });
-        changed = true;
+    const targetDay = Math.min(31, Math.max(1, Number(r.day) || 1));
+
+    // Encontra todos os meses que o ciclo toca (pode ser 1 ou 2 meses) e calcula
+    // em qual desses meses o targetDay cai DENTRO do ciclo E já passou (today >= targetDate)
+    const monthsSeen = new Set();
+    let cursor = new Date(cycleStart.getFullYear(), cycleStart.getMonth(), 1);
+    const cycleEndCursor = new Date(cycleEnd.getFullYear(), cycleEnd.getMonth() + 1, 1);
+    while (cursor < cycleEndCursor) {
+      const y = cursor.getFullYear();
+      const m = cursor.getMonth();
+      const key = `${y}-${m}`;
+      if (!monthsSeen.has(key)) {
+        monthsSeen.add(key);
+        const dim = new Date(y, m + 1, 0).getDate();
+        const day = Math.min(targetDay, dim);
+        const targetDate = new Date(y, m, day);
+        // A data de destino precisa estar dentro do ciclo E já ter chegado (ou ser hoje)
+        if (targetDate >= cycleStart && targetDate <= cycleEnd && targetDate <= now) {
+          const dateStr = `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+          // Verifica se já existe um gasto gerado para esse recorrente nesse ciclo
+          const alreadyExists = newExpenses.some(
+            (e) => e.recurringId === r.id && e.date >= dateStr.substring(0, 7) + "-01" &&
+            parseDate(e.date) >= cycleStart && parseDate(e.date) <= cycleEnd
+          );
+          if (!alreadyExists) {
+            newExpenses.push({
+              id: genId("exp"),
+              value: Number(r.value) || 0,
+              description: r.description,
+              date: dateStr,
+              categoryId: r.categoryId,
+              person: r.person || "Automático",
+              paymentMethodId: r.paymentMethodId,
+              recurringId: r.id,
+            });
+            changed = true;
+          }
+        }
       }
+      cursor = new Date(y, m + 1, 1);
     }
   });
+
   return { expenses: newExpenses, changed };
 }
 function daysInMonth(year, month) {
